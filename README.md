@@ -94,3 +94,11 @@ local_root=/home/ftpusers/$USER
 ### restart vsftpd
 
 `sudo systemctl restart vsftpd`
+
+## install git
+
+`sudo apt install git -y`
+
+## install SQLite
+
+`sudo apt install sqlite3 -y`
