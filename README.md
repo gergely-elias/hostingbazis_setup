@@ -102,3 +102,35 @@ local_root=/home/ftpusers/$USER
 ## install SQLite
 
 `sudo apt install sqlite3 -y`
+
+## install pip
+
+`sudo apt install pipx -y`
+
+## install uv
+
+`pipx install uv`
+
+## updating PATH
+
+`pipx ensurepath`
+
+`pipx completions` (for instructions)
+
+`eval "$(register-python-argcomplete pipx)"`
+
+## create virtual environment
+
+`uv venv <envname> --python 3.12`
+
+## activate environment
+
+`source <envname>/bin/activate`
+
+## install packaged version of pip
+
+`python -m ensurepip`
+
+## install Django
+
+`python -m pip install Django==6.0`
