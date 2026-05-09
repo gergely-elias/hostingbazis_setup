@@ -134,3 +134,81 @@ local_root=/home/ftpusers/$USER
 ## install Django
 
 `python -m pip install Django==6.0`
+
+## install nginx
+
+`sudo apt install nginx -y`
+
+## install gunicorn
+
+`python -m pip install gunicorn`
+
+## configure gunicorn with systemd
+
+### create gunicorn socket file
+
+`sudo nano /etc/systemd/system/gunicorn.socket`
+
+```
+[Unit]
+Description=gunicorn socket
+
+[Socket]
+ListenStream=/run/gunicorn.sock
+
+[Install]
+WantedBy=sockets.target
+```
+
+### create gunicorn service file
+
+`sudo nano /etc/systemd/system/gunicorn.service`
+
+```
+[Unit]
+Description=gunicorn daemon
+Requires=gunicorn.socket
+After=network.target
+
+[Service]
+User=<username>
+Group=www-data
+WorkingDirectory=/home/<username>/my_app
+ExecStart=/home/<username>/my_app/venv/bin/gunicorn \
+          --workers 3 \
+          --bind unix:/run/gunicorn.sock \
+          app:app  # Use 'project_name.wsgi' for Django
+
+[Install]
+WantedBy=multi-user.target
+```
+
+(workers: 2 x cores + 1 for optimal performance)
+
+## configure nginx as reverse proxy
+
+`sudo nano /etc/nginx/sites-available/my_app`
+
+```
+server {
+    listen 80;
+    server_name <domain_or_IP>;
+
+    location / {
+        include proxy_params;
+        proxy_pass http://unix:/run/gunicorn.sock;
+    }
+}
+```
+
+## enable and start services
+
+`sudo systemctl start gunicorn.socket`
+
+`sudo systemctl enable gunicorn.socket`
+
+`sudo ln -s /etc/nginx/sites-available/my_app /etc/nginx/sites-enabled`
+
+`sudo nginx -t`
+
+`sudo systemctl restart nginx`
