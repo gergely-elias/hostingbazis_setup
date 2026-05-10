@@ -186,10 +186,12 @@ python -m ensurepip
 
 ```bash
 # [django]
-pip install django gunicorn
+python -m pip install django gunicorn
 ```
 
 > Django 5.x is the current stable release. Do **not** pin `==6.0` — that version does not exist.
+> Use `python -m pip` rather than bare `pip` — it guarantees you're using the pip that
+> belongs to the active venv, avoiding PATH ambiguity.
 
 ### Start a new Django project
 
@@ -385,7 +387,8 @@ The pattern is identical. For a project called `blog`:
 # [django] — project setup
 mkdir ~/projects/blog && cd ~/projects/blog
 uv venv .venv --python 3.12 && source .venv/bin/activate
-pip install django gunicorn
+python -m ensurepip
+python -m pip install django gunicorn
 django-admin startproject blog .
 python manage.py migrate && python manage.py collectstatic --noinput
 chmod -R 755 ~/projects/blog/staticfiles ~/projects/blog/media
