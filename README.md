@@ -18,6 +18,18 @@ The app user (`django`) has no sudo. If a project is ever compromised, the attac
 > Throughout this document, each code block is prefixed with the user who runs it:
 > `[adminuser]` or `[django]`
 
+### Switching between users
+
+No need to log out or open a new SSH session. From any session, use `su -` to switch:
+
+```bash
+su - django      # switch to django (full login shell)
+exit             # switch back to whoever you were before
+```
+
+The `-` flag is important — it gives you django's full environment and home directory,
+as if you had SSH'd in as them directly.
+
 ---
 
 ## 1. Create users
