@@ -4,16 +4,46 @@
 
 ---
 
-## 1. Create non-root user
+## User model
+
+This setup uses **two unprivileged users** — never root directly.
+
+| User | Purpose | Has sudo? |
+|---|---|---|
+| `adminuser` | System config: apt, nginx, systemd, certbot | **yes** |
+| `django` | Owns all project files, runs gunicorn | **no** |
+
+The app user (`django`) has no sudo. If a project is ever compromised, the attacker cannot touch system config, install packages, or affect other services. System-level tasks are always done from `adminuser`.
+
+> Throughout this document, each code block is prefixed with the user who runs it:
+> `[adminuser]` or `[django]`
+
+---
+
+## 1. Create users
+
+> Run as **root** for this section only — immediately after first login.
 
 ```bash
-adduser <username>
-usermod -aG sudo <username>
+# Admin user — your day-to-day login for system tasks
+adduser adminuser
+usermod -aG sudo adminuser
+
+# App user — owns projects, no sudo
+adduser django
+
+# Allow nginx (www-data) to read files owned by django
+usermod -aG django www-data
 ```
+
+Log out of root. From here on, **never log in as root again** — use `adminuser` for system tasks and `django` for project work.
+
+---
 
 ## 2. Update packages
 
 ```bash
+# [adminuser]
 sudo apt update && sudo apt upgrade -y
 ```
 
@@ -21,9 +51,12 @@ sudo apt update && sudo apt upgrade -y
 
 ## 3. FTP server (vsftpd)
 
+The `django` user's home directory (`/home/django`) is the FTP root. Files uploaded via FTP land there and are directly accessible to the app.
+
 ### Install and enable
 
 ```bash
+# [adminuser]
 sudo apt install vsftpd -y
 sudo systemctl start vsftpd
 sudo systemctl enable vsftpd
@@ -32,6 +65,7 @@ sudo systemctl enable vsftpd
 ### Configure firewall
 
 ```bash
+# [adminuser]
 sudo ufw allow 20/tcp
 sudo ufw allow 21/tcp
 sudo ufw allow 40000:50000/tcp
@@ -42,6 +76,7 @@ sudo ufw enable
 ### Generate SSL/TLS certificate
 
 ```bash
+# [adminuser]
 sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
   -keyout /etc/ssl/private/vsftpd.key \
   -out /etc/ssl/certs/vsftpd.pem
@@ -50,6 +85,7 @@ sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
 ### Configure vsftpd
 
 ```bash
+# [adminuser]
 sudo cp /etc/vsftpd.conf /etc/vsftpd.conf.bak
 sudo nano /etc/vsftpd.conf
 ```
@@ -79,34 +115,32 @@ local_root=/home/$USER
 ```
 
 ```bash
+# [adminuser]
 sudo systemctl restart vsftpd
 ```
 
-> **Note:** With this setup your FTP root is simply `/home/<username>`. No separate `ftpusers` group
-> is needed — the user owns their own files, and nginx/gunicorn run as `www-data` with group
-> read access granted below. Keep it simple.
-
 ---
 
-## 4. Install core tools
+## 4. Install system packages and tools
 
 ```bash
-sudo apt install git sqlite3 -y
-
-# pipx manages isolated CLI tools; uv is a fast pip/venv replacement
+# [adminuser] — system packages require sudo
+sudo apt install git sqlite3 nginx -y
 sudo apt install pipx -y
+```
+
+```bash
+# [django] — uv is installed into the app user's own space, no sudo needed
 pipx install uv
-pipx ensurepath          # adds ~/.local/bin to PATH; re-login or source ~/.bashrc after this
+pipx ensurepath    # adds ~/.local/bin to PATH; re-login or source ~/.bashrc after this
 ```
 
 ---
 
 ## 5. Directory layout
 
-Adopt a consistent layout before creating any projects:
-
 ```
-/home/<username>/
+/home/django/
     projects/
         mysite/          ← one directory per Django project
         blog/
@@ -114,6 +148,7 @@ Adopt a consistent layout before creating any projects:
 ```
 
 ```bash
+# [django]
 mkdir -p ~/projects
 ```
 
@@ -121,11 +156,13 @@ mkdir -p ~/projects
 
 ## 6. Per-project setup
 
-Repeat this section for every new Django project. Replace `mysite` with your project name.
+Repeat this section for every new project. Replace `mysite` with your project name.
+**All steps in this section run as `django`** — no sudo anywhere.
 
 ### Create project directory and virtualenv
 
 ```bash
+# [django]
 mkdir ~/projects/mysite
 cd ~/projects/mysite
 uv venv .venv --python 3.12
@@ -136,6 +173,7 @@ python -m ensurepip
 ### Install Django and gunicorn
 
 ```bash
+# [django]
 pip install django gunicorn
 ```
 
@@ -144,7 +182,8 @@ pip install django gunicorn
 ### Start a new Django project
 
 ```bash
-django-admin startproject mysite .   # the trailing dot puts manage.py in the current directory
+# [django]
+django-admin startproject mysite .   # trailing dot keeps manage.py in the current directory
 ```
 
 ### Configure settings for production
@@ -175,29 +214,36 @@ DATABASES = {
 ### Run migrations and collect static files
 
 ```bash
+# [django]
 python manage.py migrate
 python manage.py collectstatic --noinput
 python manage.py createsuperuser
 ```
 
-### Set file permissions so nginx can read static files
+### Set permissions so nginx can read project files
+
+nginx runs as `www-data`, which was added to the `django` group in step 1.
+Now set the right permissions so that group membership actually grants access:
 
 ```bash
-chmod 710 /home/<username>                        # www-data needs execute to traverse
+# [django]
+chmod 750 /home/django                              # www-data can traverse via group membership
 chmod -R 755 ~/projects/mysite/staticfiles
 chmod -R 755 ~/projects/mysite/media
-sudo usermod -aG <username> www-data              # add www-data to your group
 ```
 
 ---
 
 ## 7. Gunicorn — one socket per project
 
-Each Django project gets its own socket and service. This keeps projects fully isolated.
+**Socket and service files go in `/etc/systemd/system/` — this requires `adminuser`.**
+But note that the service itself runs the gunicorn process *as `django`*, so the app
+never has elevated privileges at runtime.
 
-### Socket file: `/etc/systemd/system/gunicorn-mysite.socket`
+### Socket file
 
 ```bash
+# [adminuser]
 sudo nano /etc/systemd/system/gunicorn-mysite.socket
 ```
 
@@ -212,9 +258,10 @@ ListenStream=/run/gunicorn-mysite.sock
 WantedBy=sockets.target
 ```
 
-### Service file: `/etc/systemd/system/gunicorn-mysite.service`
+### Service file
 
 ```bash
+# [adminuser]
 sudo nano /etc/systemd/system/gunicorn-mysite.service
 ```
 
@@ -225,10 +272,10 @@ Requires=gunicorn-mysite.socket
 After=network.target
 
 [Service]
-User=<username>
+User=django
 Group=www-data
-WorkingDirectory=/home/<username>/projects/mysite
-ExecStart=/home/<username>/projects/mysite/.venv/bin/gunicorn \
+WorkingDirectory=/home/django/projects/mysite
+ExecStart=/home/django/projects/mysite/.venv/bin/gunicorn \
           --workers 3 \
           --bind unix:/run/gunicorn-mysite.sock \
           mysite.wsgi:application
@@ -240,12 +287,13 @@ WantedBy=multi-user.target
 > **Workers:** A common rule of thumb is `2 × CPU cores + 1`.
 >
 > **WSGI entrypoint:** For Django it is always `<projectname>.wsgi:application` —
-> the `projectname` here is the inner directory that contains `settings.py`, `wsgi.py`, etc.
+> the `projectname` is the inner directory containing `settings.py` and `wsgi.py`.
 > (`app:app` is Flask syntax and will not work with Django.)
 
 ### Enable and start
 
 ```bash
+# [adminuser]
 sudo systemctl daemon-reload
 sudo systemctl start gunicorn-mysite.socket
 sudo systemctl enable gunicorn-mysite.socket
@@ -254,6 +302,7 @@ sudo systemctl enable gunicorn-mysite.socket
 Verify the socket was created:
 
 ```bash
+# [adminuser]
 sudo systemctl status gunicorn-mysite.socket
 ls /run/gunicorn-mysite.sock
 ```
@@ -262,15 +311,10 @@ ls /run/gunicorn-mysite.sock
 
 ## 8. nginx — one server block per project
 
-### Install nginx
+### Site config
 
 ```bash
-sudo apt install nginx -y
-```
-
-### Site config: `/etc/nginx/sites-available/mysite`
-
-```bash
+# [adminuser]
 sudo nano /etc/nginx/sites-available/mysite
 ```
 
@@ -279,14 +323,14 @@ server {
     listen 80;
     server_name yourdomain.com www.yourdomain.com;
 
-    # Serve Django's collected static files directly — do NOT proxy these to gunicorn
+    # Serve Django's collected static files directly — never proxy these to gunicorn
     location /static/ {
-        alias /home/<username>/projects/mysite/staticfiles/;
+        alias /home/django/projects/mysite/staticfiles/;
     }
 
     # Serve user-uploaded media files directly
     location /media/ {
-        alias /home/<username>/projects/mysite/media/;
+        alias /home/django/projects/mysite/media/;
     }
 
     # Everything else goes to gunicorn
@@ -300,6 +344,7 @@ server {
 ### Enable the site
 
 ```bash
+# [adminuser]
 sudo ln -s /etc/nginx/sites-available/mysite /etc/nginx/sites-enabled/
 sudo nginx -t          # must print "syntax is ok" before restarting
 sudo systemctl restart nginx
@@ -310,47 +355,141 @@ sudo systemctl restart nginx
 ## 9. HTTPS with Let's Encrypt (strongly recommended)
 
 ```bash
+# [adminuser]
 sudo apt install certbot python3-certbot-nginx -y
 sudo certbot --nginx -d yourdomain.com -d www.yourdomain.com
 ```
 
-Certbot will rewrite your nginx config to handle 443 and redirect 80 → 443 automatically.
+Certbot rewrites your nginx config to handle port 443 and redirect 80 → 443 automatically.
 Renewal is handled by a systemd timer installed with certbot — no cron job needed.
 
 ---
 
 ## 10. Adding a second project
 
-The pattern is the same. For a project called `blog`:
+The pattern is identical. For a project called `blog`:
 
-1. Create `~/projects/blog/`, set up venv, install django + gunicorn, run `startproject blog .`
-2. Create `/etc/systemd/system/gunicorn-blog.socket` and `gunicorn-blog.service` (socket path: `/run/gunicorn-blog.sock`, WSGI: `blog.wsgi:application`)
-3. Create `/etc/nginx/sites-available/blog` pointing to a different `server_name` and the `blog.sock`
-4. `systemctl enable --now gunicorn-blog.socket && nginx -t && systemctl restart nginx`
+```bash
+# [django] — project setup
+mkdir ~/projects/blog && cd ~/projects/blog
+uv venv .venv --python 3.12 && source .venv/bin/activate
+pip install django gunicorn
+django-admin startproject blog .
+python manage.py migrate && python manage.py collectstatic --noinput
+chmod -R 755 ~/projects/blog/staticfiles ~/projects/blog/media
+```
+
+```bash
+# [adminuser] — system config
+sudo nano /etc/systemd/system/gunicorn-blog.socket    # ListenStream=/run/gunicorn-blog.sock
+sudo nano /etc/systemd/system/gunicorn-blog.service   # User=django, WSGI=blog.wsgi:application
+sudo systemctl daemon-reload
+sudo systemctl enable --now gunicorn-blog.socket
+
+sudo nano /etc/nginx/sites-available/blog             # server_name, proxy to gunicorn-blog.sock
+sudo ln -s /etc/nginx/sites-available/blog /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+```
 
 ---
 
 ## 11. Useful commands
 
 ```bash
-# Check gunicorn is running after a request hits nginx
+# [adminuser] — check gunicorn status
 sudo systemctl status gunicorn-mysite
 
-# Tail gunicorn logs
+# [adminuser] — tail gunicorn logs
 sudo journalctl -u gunicorn-mysite -f
 
-# Tail nginx logs
+# [adminuser] — tail nginx logs
 sudo tail -f /var/log/nginx/error.log
 sudo tail -f /var/log/nginx/access.log
 
-# After changing Django code, restart gunicorn (no nginx restart needed)
-sudo systemctl restart gunicorn-mysite
-
-# After changing nginx config
+# [adminuser] — after changing nginx config
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
+```bash
+# [django] — after changing Django code, signal adminuser to restart gunicorn
+# (django user cannot run systemctl — ask adminuser or set up a deploy script)
+```
+
+> **Deployment tip:** If restarting gunicorn after every code change feels cumbersome,
+> grant the `django` user permission to restart *only* gunicorn services via `/etc/sudoers.d/`.
+> See section 12 below.
+
 ---
+
+## 12. Granting `django` permission to restart its own services
+
+Without this, every code deploy requires you to SSH in as `adminuser` just to run
+`systemctl restart`. Instead, create a narrow sudoers rule that allows `django` to
+restart *only* gunicorn — nothing else.
+
+### Create the rule file
+
+```bash
+# [adminuser]
+sudo visudo -f /etc/sudoers.d/django-gunicorn
+```
+
+> Always use `visudo` — it validates the syntax before saving. A typo in a sudoers file
+> can lock you out of sudo entirely.
+
+Add this content:
+
+```
+# Allow the django user to restart gunicorn services only
+django ALL=(root) NOPASSWD: /usr/bin/systemctl restart gunicorn-*.service
+django ALL=(root) NOPASSWD: /usr/bin/systemctl restart gunicorn-*.socket
+```
+
+Save and exit. The wildcard `gunicorn-*` means the rule automatically covers every
+project you add later without editing the file again.
+
+### Verify it works
+
+```bash
+# [django]
+sudo systemctl restart gunicorn-mysite.service
+```
+
+It should restart without prompting for a password. If you get a permission error,
+double-check the file with:
+
+```bash
+# [adminuser]
+sudo visudo -c -f /etc/sudoers.d/django-gunicorn
+```
+
+### Adding a new project later
+
+No changes needed — the wildcard covers `gunicorn-blog.service`, `gunicorn-api.service`,
+and so on automatically.
+
+### What `django` still cannot do
+
+This rule is intentionally narrow. The `django` user still cannot:
+
+- `systemctl restart nginx` (only `adminuser` can)
+- Run any other sudo command
+
+That's the point — a compromised app process can bounce itself but cannot touch the
+system around it.
+
+---
+
+## Summary: who does what
+
+| Task | User |
+|---|---|
+| apt install, ufw, certbot | `adminuser` with sudo |
+| Edit `/etc/nginx/`, `/etc/systemd/` | `adminuser` with sudo |
+| Create virtualenvs, pip install | `django` |
+| `manage.py` commands | `django` |
+| Gunicorn process at runtime | `django` (set by `User=` in service file) |
+| nginx process at runtime | `www-data` (reads django's files via group) |
 
 ## Summary: what each layer does
 
