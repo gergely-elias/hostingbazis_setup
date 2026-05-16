@@ -366,6 +366,16 @@ sudo nginx -t          # must print "syntax is ok" before restarting
 sudo systemctl restart nginx
 ```
 
+### Remove the default nginx site
+
+nginx ships with a default site that will take priority over yours if left enabled:
+
+```bash
+# [adminuser]
+sudo rm /etc/nginx/sites-enabled/default
+sudo nginx -t && sudo systemctl reload nginx
+```
+
 ---
 
 ## 9. HTTPS with Let's Encrypt (strongly recommended)
