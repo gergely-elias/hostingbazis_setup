@@ -82,6 +82,8 @@ sudo ufw allow 20/tcp
 sudo ufw allow 21/tcp
 sudo ufw allow 40000:50000/tcp
 sudo ufw allow ssh
+sudo ufw allow 80/tcp    # HTTP
+sudo ufw allow 443/tcp   # HTTPS
 sudo ufw enable
 ```
 
