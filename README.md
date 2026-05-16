@@ -157,7 +157,7 @@ pipx ensurepath    # adds ~/.local/bin to PATH; re-login or source ~/.bashrc aft
 /home/django/
     projects/
         mysite/          ← one directory per Django project
-        blog/
+        second_project/
         api/
 ```
 
@@ -393,28 +393,134 @@ Renewal is handled by a systemd timer installed with certbot — no cron job nee
 
 ## 10. Adding a second project
 
-The pattern is identical. For a project called `blog`:
+The pattern is identical to section 6–8. For a project called `second_project`:
+
+> **Naming note:** Django project names are Python module names, so they cannot contain
+> hyphens. Use snake_case (`second_project`) for the Django project name itself.
+> Hyphens are fine for directory names, gunicorn service files, and nginx configs.
+
+### Create project directory and virtualenv
 
 ```bash
-# [django] — project setup
-mkdir ~/projects/blog && cd ~/projects/blog
-uv venv .venv --python 3.12 && source .venv/bin/activate
+# [django]
+mkdir ~/projects/second_project && cd ~/projects/second_project
+uv venv .venv --python 3.12
+source .venv/bin/activate
 python -m ensurepip
 python -m pip install django gunicorn
-django-admin startproject blog .
-python manage.py migrate && python manage.py collectstatic --noinput
-chmod -R 755 ~/projects/blog/staticfiles ~/projects/blog/media
+django-admin startproject second_project .
+```
+
+### Configure settings for production
+
+In `second_project/settings.py`:
+
+```python
+ALLOWED_HOSTS = ['yourdomain.com', 'www.yourdomain.com', '<server_IP>']
+
+STATIC_URL = '/static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': BASE_DIR / 'db.sqlite3',
+    }
+}
+```
+
+### Run migrations and collect static files
+
+```bash
+# [django]
+python manage.py migrate
+python manage.py collectstatic --noinput
+python manage.py createsuperuser
+chmod -R 755 ~/projects/second_project/staticfiles
+chmod -R 755 ~/projects/second_project/media
+```
+
+### Gunicorn socket and service
+
+```bash
+# [adminuser]
+sudo nano /etc/systemd/system/gunicorn-second_project.socket
+```
+
+```ini
+[Unit]
+Description=gunicorn socket for second_project
+
+[Socket]
+ListenStream=/run/gunicorn-second_project.sock
+
+[Install]
+WantedBy=sockets.target
 ```
 
 ```bash
-# [adminuser] — system config
-sudo nano /etc/systemd/system/gunicorn-blog.socket    # ListenStream=/run/gunicorn-blog.sock
-sudo nano /etc/systemd/system/gunicorn-blog.service   # User=django, WSGI=blog.wsgi:application
-sudo systemctl daemon-reload
-sudo systemctl enable --now gunicorn-blog.socket
+# [adminuser]
+sudo nano /etc/systemd/system/gunicorn-second_project.service
+```
 
-sudo nano /etc/nginx/sites-available/blog             # server_name, proxy to gunicorn-blog.sock
-sudo ln -s /etc/nginx/sites-available/blog /etc/nginx/sites-enabled/
+```ini
+[Unit]
+Description=gunicorn daemon for second_project
+Requires=gunicorn-second_project.socket
+After=network.target
+
+[Service]
+User=django
+Group=www-data
+WorkingDirectory=/home/django/projects/second_project
+ExecStart=/home/django/projects/second_project/.venv/bin/gunicorn \
+          --workers 3 \
+          --bind unix:/run/gunicorn-second_project.sock \
+          second_project.wsgi:application
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+# [adminuser]
+sudo systemctl daemon-reload
+sudo systemctl enable --now gunicorn-second_project.socket
+```
+
+### nginx site config
+
+```bash
+# [adminuser]
+sudo nano /etc/nginx/sites-available/second_project
+```
+
+```nginx
+server {
+    listen 80;
+    server_name yourdomain.com www.yourdomain.com;
+
+    location /static/ {
+        alias /home/django/projects/second_project/staticfiles/;
+    }
+
+    location /media/ {
+        alias /home/django/projects/second_project/media/;
+    }
+
+    location / {
+        include proxy_params;
+        proxy_pass http://unix:/run/gunicorn-second_project.sock;
+    }
+}
+```
+
+```bash
+# [adminuser]
+sudo ln -s /etc/nginx/sites-available/second_project /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
@@ -492,7 +598,7 @@ sudo visudo -c -f /etc/sudoers.d/django-gunicorn
 
 ### Adding a new project later
 
-No changes needed — the wildcard covers `gunicorn-blog.service`, `gunicorn-api.service`,
+No changes needed — the wildcard covers `gunicorn-second_project.service`, `gunicorn-api.service`,
 and so on automatically.
 
 ### What `django` still cannot do
